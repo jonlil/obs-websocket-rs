@@ -62,7 +62,7 @@ impl ObsWebSocket {
         obs
     }
 
-    fn read(&mut self) -> tungstenite::Result<Message> {
+    pub fn read(&mut self) -> tungstenite::Result<Message> {
         self.socket.read_message()
     }
 

@@ -2,10 +2,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::sync::{mpsc::sync_channel, Arc, Mutex};
 use tungstenite::{client::AutoStream, connect, Message, WebSocket};
 use url::Url;
 
 pub type ObsMessageArguments = HashMap<String, Value>;
+pub trait ObsEventEmitter {
+    fn on_event(&self, event: String);
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -47,7 +51,7 @@ pub enum ObsRequestType {
 }
 
 pub struct ObsWebSocket {
-    socket: WebSocket<AutoStream>,
+    socket: Arc<Mutex<WebSocket<AutoStream>>>,
     counter: usize,
 }
 
@@ -55,15 +59,18 @@ impl ObsWebSocket {
     pub fn connect(url: &str, password: String) -> Self {
         let connect_url = Url::parse(url).expect("Failed connecting");
         let (socket, _response) = connect(connect_url).unwrap();
-        let mut obs = ObsWebSocket { socket, counter: 0 };
+        let mut obs = ObsWebSocket {
+            socket: Arc::new(Mutex::new(socket)),
+            counter: 0,
+        };
 
         obs.authenticate(password);
 
         obs
     }
 
-    pub fn read(&mut self) -> tungstenite::Result<Message> {
-        self.socket.read_message()
+    fn read(&mut self) -> tungstenite::Result<Message> {
+        self.socket.clone().lock().unwrap().read_message()
     }
 
     fn authenticate(&mut self, password: String) {
@@ -74,6 +81,26 @@ impl ObsWebSocket {
         let mut auth_arguments = HashMap::new();
         auth_arguments.insert("auth".to_string(), Value::String(hashed_secret));
         let message = self.send(ObsRequestType::Authenticate, Some(auth_arguments));
+    }
+
+    pub fn run<T>(&mut self, tx: T)
+    where
+        T: ObsEventEmitter,
+    {
+        let socket = self.socket.clone();
+        let (sender, receiver) = sync_channel::<String>(1);
+        std::thread::spawn(move || loop {
+            if let Ok(message) = socket.lock().unwrap().read_message() {
+                sender.send(message.to_string()).unwrap();
+            }
+        });
+
+        loop {
+            match receiver.recv() {
+                Ok(message) => tx.on_event(message),
+                Err(_) => {}
+            };
+        }
     }
 
     fn message_id(&mut self) -> String {
@@ -97,7 +124,11 @@ impl ObsWebSocket {
             args,
         };
         let payload = serde_json::to_string(&message).unwrap();
-        self.socket.write_message(Message::Text(payload));
+        self.socket
+            .clone()
+            .lock()
+            .unwrap()
+            .write_message(Message::Text(payload));
 
         let message = self.read().unwrap();
         let response: ObsResponse = serde_json::from_str(message.to_text().unwrap()).unwrap();

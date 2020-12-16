@@ -1,3 +1,9 @@
+#[cfg(test)]
+#[macro_use]
+extern crate pretty_assertions;
+
+mod events;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -6,9 +12,11 @@ use std::sync::{mpsc::sync_channel, Arc, Mutex};
 use tungstenite::{client::AutoStream, connect, Message, WebSocket};
 use url::Url;
 
+pub use events::ObsEvent;
+
 pub type ObsMessageArguments = HashMap<String, Value>;
 pub trait ObsEventEmitter {
-    fn on_event(&self, event: String);
+    fn on_event(&self, event: ObsEvent);
 }
 
 #[derive(Serialize)]
@@ -97,7 +105,10 @@ impl ObsWebSocket {
 
         loop {
             match receiver.recv() {
-                Ok(message) => tx.on_event(message),
+                Ok(event) => {
+                    let event: ObsEvent = serde_json::from_str(&event).unwrap();
+                    tx.on_event(event);
+                }
                 Err(_) => {}
             };
         }
@@ -174,12 +185,5 @@ mod tests {
             .unwrap(),
             "{\"request-type\":\"GetAuthRequired\",\"message-id\":\"12345\",\"scene-name\":\"pre-show\"}"
         );
-    }
-
-    #[test]
-    fn it_connects() {
-        let obs = ObsWebSocket::connect("ws://192.168.10.106:4444", "test-password".to_string());
-
-        assert_eq!(true, false);
     }
 }

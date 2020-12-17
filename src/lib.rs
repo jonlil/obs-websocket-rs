@@ -88,7 +88,8 @@ impl ObsWebSocket {
         let hashed_secret = hash(response.salt, response.challenge, password);
         let mut auth_arguments = HashMap::new();
         auth_arguments.insert("auth".to_string(), Value::String(hashed_secret));
-        let message = self.send(ObsRequestType::Authenticate, Some(auth_arguments));
+
+        self.send(ObsRequestType::Authenticate, Some(auth_arguments));
     }
 
     pub fn run<T>(&mut self, tx: T)
@@ -106,8 +107,10 @@ impl ObsWebSocket {
         loop {
             match receiver.recv() {
                 Ok(event) => {
-                    let event: ObsEvent = serde_json::from_str(&event).unwrap();
-                    tx.on_event(event);
+                    match serde_json::from_str(&event) {
+                        Ok(message) => tx.on_event(message),
+                        Err(err) => eprintln!("Failing parsing message: {:#?}", err),
+                    };
                 }
                 Err(_) => {}
             };
@@ -135,20 +138,40 @@ impl ObsWebSocket {
             args,
         };
         let payload = serde_json::to_string(&message).unwrap();
-        self.socket
-            .clone()
-            .lock()
-            .unwrap()
-            .write_message(Message::Text(payload));
 
-        let message = self.read().unwrap();
-        let response: ObsResponse = serde_json::from_str(message.to_text().unwrap()).unwrap();
-
-        if &response.message_id == message_id {
-            Ok(message.to_string())
-        } else {
-            Err("Invalid message_id")
+        // Lock the socket since we're sending a request that we also
+        // want to get the response for.
+        match self.socket.clone().lock() {
+            Ok(mut socket) => {
+                // Send message to OBS
+                socket.write_message(Message::Text(payload));
+                match read(&mut socket) {
+                    Ok((response, message)) => {
+                        if &response.message_id == message_id {
+                            Ok(message)
+                        } else {
+                            Err("Invalid message_id")
+                        }
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+            // TODO: Handle Mutex posion
+            Err(_err) => Err("failed allocating socket lock"),
         }
+    }
+}
+
+fn read(socket: &mut WebSocket<AutoStream>) -> Result<(ObsResponse, String), &'static str> {
+    match socket.read_message() {
+        Ok(message) => match serde_json::from_str(message.to_text().unwrap()) {
+            Ok(body) => Ok((body, message.to_string())),
+            Err(err) => {
+                eprintln!("Error parsing JSON message: {:#?}", err);
+                Err("Failed parsing JSON")
+            }
+        },
+        Err(_err) => Err("Failed reading from socket"),
     }
 }
 

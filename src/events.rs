@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 
 #[derive(Deserialize, Debug, PartialEq)]
 pub struct ObsSource<'a> {
@@ -22,12 +23,48 @@ pub struct ObsSource<'a> {
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
+pub struct SceneItem {
+    item_id: u32,
+    source_name: String,
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
 #[serde(tag = "update-type")]
 pub enum ObsEvent<'a> {
     #[serde(rename_all = "kebab-case")]
     SwitchScenes {
         scene_name: &'a str,
         sources: Vec<ObsSource<'a>>,
+    },
+
+    #[serde(rename_all = "kebab-case")]
+    SceneItemSelected {
+        item_id: u32,
+        item_name: String,
+        scene_name: String,
+    },
+
+    #[serde(rename_all = "kebab-case")]
+    SceneItemDeselected {
+        item_id: u32,
+        item_name: String,
+        scene_name: String,
+    },
+
+    #[serde(rename_all = "kebab-case")]
+    SceneItemVisibilityChanged {
+        item_id: u32,
+        item_name: String,
+        item_visible: bool,
+        scene_name: String,
+    },
+
+    #[serde(rename_all = "kebab-case")]
+    SceneItemLockChanged {
+        item_id: u32,
+        item_name: String,
+        item_locked: bool,
+        scene_name: String,
     },
 
     #[serde(rename_all = "kebab-case")]
@@ -58,8 +95,48 @@ pub enum ObsEvent<'a> {
         #[serde(rename = "type")]
         kind: String,
     },
-    //SourceDestroyed,
-    //SourceFilterRemoved,
+
+    ScenesChanged,
+
+    #[serde(rename_all = "camelCase")]
+    SourceVolumeChanged {
+        source_name: String,
+        volume: f64,
+    },
+
+    #[serde(rename_all = "camelCase")]
+    SourceMuteStateChanged {
+        source_name: String,
+        muted: bool,
+    },
+
+    #[serde(rename_all = "camelCase")]
+    SourceDestroyed {
+        source_kind: String,
+        source_name: String,
+        source_type: String,
+    },
+
+    #[serde(rename_all = "camelCase")]
+    SourceCreated {
+        source_name: String,
+        source_type: String,
+        source_settings: HashMap<String, String>,
+    },
+
+    #[serde(rename_all = "camelCase")]
+    SourceFilterRemoved {
+        filter_name: String,
+        filter_type: String,
+        source_name: String,
+    },
+
+    #[serde(rename_all = "kebab-case")]
+    SourceOrderChanged {
+        scene_name: String,
+        scene_items: Vec<SceneItem>,
+    },
+
     #[serde(rename_all = "kebab-case")]
     PreviewSceneChanged {
         scene_name: &'a str,

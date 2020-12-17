@@ -109,7 +109,9 @@ impl ObsWebSocket {
                 Ok(event) => {
                     match serde_json::from_str(&event) {
                         Ok(message) => tx.on_event(message),
-                        Err(err) => eprintln!("Failing parsing message: {:#?}", err),
+                        Err(err) => {
+                            eprintln!("Failed parsing message: {:#?}, raw: {:?}", err, event)
+                        }
                     };
                 }
                 Err(_) => {}
@@ -167,7 +169,7 @@ fn read(socket: &mut WebSocket<AutoStream>) -> Result<(ObsResponse, String), &'s
         Ok(message) => match serde_json::from_str(message.to_text().unwrap()) {
             Ok(body) => Ok((body, message.to_string())),
             Err(err) => {
-                eprintln!("Error parsing JSON message: {:#?}", err);
+                eprintln!("Error parsing JSON message: {:#?}, raw: {:?}", err, message);
                 Err("Failed parsing JSON")
             }
         },

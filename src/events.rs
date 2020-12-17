@@ -24,8 +24,42 @@ pub struct ObsSource<'a> {
 #[derive(Deserialize, Debug, PartialEq)]
 #[serde(tag = "update-type")]
 pub enum ObsEvent<'a> {
-    Test,
+    #[serde(rename_all = "kebab-case")]
+    SwitchScenes {
+        scene_name: &'a str,
+        sources: Vec<ObsSource<'a>>,
+    },
 
+    #[serde(rename_all = "kebab-case")]
+    TransitionBegin {
+        duration: u32,
+        from_scene: String,
+        to_scene: String,
+        name: String,
+        #[serde(rename = "type")]
+        kind: String,
+    },
+
+    #[serde(rename_all = "kebab-case")]
+    TransitionEnd {
+        duration: u32,
+        to_scene: String,
+        name: String,
+        #[serde(rename = "type")]
+        kind: String,
+    },
+
+    #[serde(rename_all = "kebab-case")]
+    TransitionVideoEnd {
+        duration: u32,
+        from_scene: String,
+        to_scene: String,
+        name: String,
+        #[serde(rename = "type")]
+        kind: String,
+    },
+    //SourceDestroyed,
+    //SourceFilterRemoved,
     #[serde(rename_all = "kebab-case")]
     PreviewSceneChanged {
         scene_name: &'a str,

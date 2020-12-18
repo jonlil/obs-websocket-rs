@@ -2,12 +2,12 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 #[derive(Deserialize, Debug, PartialEq)]
-pub struct ObsSource<'a> {
+pub struct ObsSource {
     alignment: u32,
     cx: f32,
     cy: f32,
     id: u32,
-    name: &'a str,
+    name: String,
     locked: bool,
     muted: bool,
     render: bool,
@@ -15,7 +15,7 @@ pub struct ObsSource<'a> {
     source_cy: u32,
 
     #[serde(rename = "type")]
-    kind: &'a str,
+    kind: String,
 
     volume: f64,
     x: f32,
@@ -30,11 +30,11 @@ pub struct SceneItem {
 
 #[derive(Deserialize, Debug, PartialEq)]
 #[serde(tag = "update-type")]
-pub enum ObsEvent<'a> {
+pub enum ObsEvent {
     #[serde(rename_all = "kebab-case")]
     SwitchScenes {
-        scene_name: &'a str,
-        sources: Vec<ObsSource<'a>>,
+        scene_name: String,
+        sources: Vec<ObsSource>,
     },
 
     #[serde(rename_all = "kebab-case")]
@@ -139,8 +139,8 @@ pub enum ObsEvent<'a> {
 
     #[serde(rename_all = "kebab-case")]
     PreviewSceneChanged {
-        scene_name: &'a str,
-        sources: Vec<ObsSource<'a>>,
+        scene_name: String,
+        sources: Vec<ObsSource>,
     },
 }
 

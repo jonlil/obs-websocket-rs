@@ -13,7 +13,12 @@ pub use requests::RequestType;
 pub use session::ObsSession;
 pub use web_socket::{ObsEventEmitter, ObsResponse, ObsWebSocket};
 
-pub fn connect(address: &str, password: String) -> ObsSession {
-    let obs = ObsWebSocket::connect(address, password);
-    ObsSession::new(obs)
+pub fn connect<T: ObsEventEmitter + Send + 'static>(
+    address: &str,
+    password: String,
+    tx: T,
+) -> Result<ObsSession, &'static str> {
+    let obs = ObsWebSocket::connect(address, password, Box::new(tx))?;
+
+    Ok(ObsSession::new(obs))
 }

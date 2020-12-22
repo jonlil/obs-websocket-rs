@@ -1,22 +1,30 @@
 pub use crate::events::ObsEvent;
 pub use crate::requests::{Request as ObsRequest, RequestType as ObsRequestType};
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::sync::{mpsc::sync_channel, Arc, Mutex};
-use tungstenite::{client::AutoStream, connect, Message, WebSocket};
+use std::net::TcpStream;
+use std::sync::{
+    mpsc::{sync_channel, SyncSender},
+    Arc, Mutex,
+};
+use tungstenite::{Message, WebSocket};
 use url::Url;
 
-pub struct ObsWebSocket {
-    socket: Arc<Mutex<WebSocket<AutoStream>>>,
-    counter: usize,
-}
-
-pub type ObsMessageArguments = HashMap<String, Value>;
 pub trait ObsEventEmitter {
     fn on_event(&self, event: ObsEvent);
 }
+type ObsEventListeners = Arc<Mutex<HashMap<String, SyncSender<String>>>>;
+
+pub struct ObsWebSocket {
+    socket: Arc<Mutex<WebSocket<TcpStream>>>,
+    counter: usize,
+    listeners: ObsEventListeners,
+}
+
+pub type ObsMessageArguments = HashMap<String, Value>;
 
 #[derive(Deserialize, Debug)]
 pub struct ObsResponse {
@@ -39,70 +47,67 @@ struct ObsAuthRequiredResponse {
 }
 
 impl ObsWebSocket {
-    pub fn connect(url: &str, password: String) -> Self {
+    fn client(url: &str) -> Result<WebSocket<TcpStream>, &'static str> {
         let connect_url = Url::parse(url).expect("Failed connecting");
-        let (socket, _response) = connect(connect_url).unwrap();
+        let addrs = connect_url.socket_addrs(|| Some(80)).unwrap();
+        let stream = std::net::TcpStream::connect(&*addrs)
+            .map_err(|_| "Failed connecting to WebSocket server")?;
+
+        tungstenite::client::client(connect_url, stream)
+            .map(|(socket, _response)| socket)
+            .map_err(|_| "")
+    }
+
+    pub fn connect<T>(url: &str, password: String, tx: Box<T>) -> Result<Self, &'static str>
+    where
+        T: ObsEventEmitter + Send + 'static,
+    {
         let mut obs = ObsWebSocket {
-            socket: Arc::new(Mutex::new(socket)),
+            socket: Arc::new(Mutex::new(Self::client(url)?)),
             counter: 0,
+            listeners: Arc::new(Mutex::new(HashMap::new())),
         };
 
+        obs.run(tx);
         obs.authenticate(password);
 
-        obs
-    }
-
-    pub fn read(&mut self) -> tungstenite::Result<Message> {
-        self.socket.clone().lock().unwrap().read_message()
-    }
-
-    pub fn find_scenes(&mut self) -> Result<String, &'static str> {
-        match self.send(ObsRequestType::GetSceneList, None) {
-            Ok(message) => {
-                eprintln!("{:?}", message);
-
-                Ok("something".to_string())
-            }
-            Err(_) => Err("Failed finding scenes"),
-        }
+        Ok(obs)
     }
 
     fn authenticate(&mut self, password: String) {
-        let message = self.send(ObsRequestType::GetAuthRequired, None).unwrap();
-        let response: ObsAuthRequiredResponse = serde_json::from_str(&message).unwrap();
+        let response: ObsAuthRequiredResponse =
+            self.send(ObsRequestType::GetAuthRequired, None).unwrap();
 
         let hashed_secret = hash(response.salt, response.challenge, password);
         let mut auth_arguments = HashMap::new();
         auth_arguments.insert("auth".to_string(), Value::String(hashed_secret));
 
-        self.send(ObsRequestType::Authenticate, Some(auth_arguments));
+        self.send::<ObsResponse>(ObsRequestType::Authenticate, Some(auth_arguments));
     }
 
-    pub fn run<T>(&mut self, tx: T)
-    where
-        T: ObsEventEmitter,
-    {
+    pub fn run(&mut self, tx: Box<dyn ObsEventEmitter + Send + 'static>) {
         let socket = self.socket.clone();
-        let (sender, receiver) = sync_channel::<String>(1);
-        std::thread::spawn(move || loop {
-            if let Ok(message) = socket.lock().unwrap().read_message() {
-                sender.send(message.to_string()).unwrap();
-            }
-        });
 
-        loop {
-            match receiver.recv() {
-                Ok(event) => {
-                    match serde_json::from_str(&event) {
-                        Ok(message) => tx.on_event(message),
-                        Err(err) => {
-                            eprintln!("Failed parsing message: {:#?}, raw: {:?}", err, event)
-                        }
+        // Set the stream in non-blocking mode
+        match socket.lock() {
+            Ok(mut socket) => socket.get_mut().set_nonblocking(true).unwrap(),
+            _ => panic!("Could not set socket in non-blocking mode"),
+        };
+
+        let listeners = self.listeners.clone();
+        std::thread::spawn(move || loop {
+            match socket.lock() {
+                Ok(mut socket) => {
+                    match socket.read_message() {
+                        Ok(message) => process_event(message.to_string(), &listeners, &tx),
+                        _ => {}
                     };
                 }
-                Err(_) => {}
+                Err(err) => eprintln!("{:?}", err),
             };
-        }
+
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        });
     }
 
     fn message_id(&mut self) -> String {
@@ -114,48 +119,80 @@ impl ObsWebSocket {
         self.counter.to_string()
     }
 
-    pub fn send(
+    pub fn send<R>(
         &mut self,
         request_type: ObsRequestType,
         args: Option<ObsMessageArguments>,
-    ) -> Result<String, &'static str> {
+    ) -> Result<R, &'static str>
+    where
+        R: DeserializeOwned,
+    {
         let message_id = &self.message_id();
         let message = ObsRequest::new(request_type, &message_id, args);
         let payload = serde_json::to_string(&message).unwrap();
+        let (sender, rx) = sync_channel::<String>(1);
 
-        // Lock the socket since we're sending a request that we also
-        // want to get the response for.
+        self.add_callback(message_id.into(), sender);
+
         match self.socket.clone().lock() {
             Ok(mut socket) => {
                 // Send message to OBS
-                socket.write_message(Message::Text(payload));
-                match read(&mut socket) {
-                    Ok((response, message)) => {
-                        if &response.message_id == message_id {
-                            Ok(message)
-                        } else {
-                            Err("Invalid message_id")
-                        }
-                    }
-                    Err(err) => Err(err),
-                }
+                socket
+                    .write_message(Message::Text(payload))
+                    .map_err(|_| "Failed sending websocket message to server")?;
             }
             // TODO: Handle Mutex posion
-            Err(_err) => Err("failed allocating socket lock"),
+            Err(_err) => {}
+        };
+
+        match rx.recv() {
+            Ok(message) => {
+                serde_json::from_str(&message).map_err(|_err| "Failed parsing OBS Message")
+            }
+            Err(_err) => Err("Failed reading OBS response"),
         }
+    }
+
+    fn add_callback(&mut self, msg_id: String, sender: SyncSender<String>) {
+        match self.listeners.lock() {
+            Ok(mut listeners) => listeners.insert(msg_id, sender),
+            Err(_err) => panic!("Failed adding callback listener"),
+        };
     }
 }
 
-fn read(socket: &mut WebSocket<AutoStream>) -> Result<(ObsResponse, String), &'static str> {
-    match socket.read_message() {
-        Ok(message) => match serde_json::from_str(message.to_text().unwrap()) {
-            Ok(body) => Ok((body, message.to_string())),
-            Err(err) => {
-                eprintln!("Error parsing JSON message: {:#?}, raw: {:?}", err, message);
-                Err("Failed parsing JSON")
+fn process_event(
+    event: String,
+    listeners: &ObsEventListeners,
+    tx: &Box<dyn ObsEventEmitter + Send + 'static>,
+) {
+    if let Ok(message) = serde_json::from_str::<ObsResponse>(&event) {
+        find_callback_listener(&listeners, &message.message_id).map(|tx| {
+            match tx.send(event) {
+                _ => {}
+            };
+        });
+    } else {
+        match serde_json::from_str(&event) {
+            Ok(obs_event) => tx.on_event(obs_event),
+            Err(_err) => {}
+        };
+    }
+}
+
+fn find_callback_listener(
+    listeners: &ObsEventListeners,
+    message_id: &str,
+) -> Option<SyncSender<String>> {
+    match listeners.lock() {
+        Ok(mut listeners) => {
+            if let Some(tx) = listeners.remove(message_id) {
+                Some(tx)
+            } else {
+                None
             }
-        },
-        Err(_err) => Err("Failed reading from socket"),
+        }
+        Err(_) => None,
     }
 }
 
